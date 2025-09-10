@@ -1,4 +1,4 @@
-siihnew/
+
 ├── app.py
 ├── cleaneddata.csv
 ├── requirements.txt
