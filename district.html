@@ -1,0 +1,28 @@
+{% extends "layout.html" %}
+{% block content %}
+<h3>District Summary: {{ district }}</h3>
+<ul>
+  <li>Average HMPI: {{ summary.avg_hmpi }}</li>
+</ul>
+
+<table class="table table-bordered">
+  <thead>
+    <tr>
+      <th>Metal</th>
+      <th>Avg Value</th>
+      <th>Safe Limit</th>
+      <th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in metals_table %}
+    <tr>
+      <td>{{ row.metal }}</td>
+      <td>{{ row.avg_val }}</td>
+      <td>{{ row.limit }}</td>
+      <td>{{ row.status }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

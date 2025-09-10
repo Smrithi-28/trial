@@ -1,0 +1,16 @@
+{% extends "layout.html" %}
+{% block content %}
+<h2>General Page</h2>
+<p>This page shows the cleaned dataset and map. It also lists diseases caused by deficiencies, water pollution, poisoning, etc.</p>
+
+<ul>
+  <li><b>Iron Deficiency:</b> Anemia</li>
+  <li><b>Zinc Deficiency:</b> Growth retardation, hair loss</li>
+  <li><b>Lead Poisoning:</b> Neurological issues</li>
+  <li><b>Arsenic Contamination:</b> Skin lesions, cancer</li>
+</ul>
+
+<div class="map-container">{{ map_html|safe }}</div>
+<h3>Dataset</h3>
+<div class="table-container">{{ table|safe }}</div>
+{% endblock %}
