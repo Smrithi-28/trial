@@ -1,7 +1,7 @@
 import matplotlib
 matplotlib.use('Agg')
 
-from flask import Flask, render_template_string, request, redirect, url_for, session
+from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
@@ -13,7 +13,7 @@ import folium
 from folium.plugins import MarkerCluster
 from scipy.stats import skew
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = "supersecretkey"
 
 DATA_PATH = "cleaneddata.csv"
@@ -26,37 +26,17 @@ SAFE_LIMITS = {
 }
 
 USERS = {
-    "public": {"password": "public123", "role": "public"},
-    "govt": {"password": "govt123", "role": "govt"}
+    "public": {"password": "public123", "role": "public", "email": "public@example.com"},
+    "govt": {"password": "govt123", "role": "govt", "email": "govt@example.com"},
+    "admin": {"password": "admin123", "role": "admin", "email": "admin@example.com"}
 }
 
-# ----------------------
-# Templates
-# ----------------------
-LOGIN_TEMPLATE = """
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>Login - HMPI Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="container">
-<h2 class="mt-4">HMPI Dashboard Login</h2>
-<form method="post" class="mt-3">
-  <div class="mb-3">
-    <label>Username</label>
-    <input type="text" name="username" class="form-control" required>
-  </div>
-  <div class="mb-3">
-    <label>Password</label>
-    <input type="password" name="password" class="form-control" required>
-  </div>
-  <button class="btn btn-primary">Login</button>
-  {% if error %}<div class="text-danger mt-2">{{error}}</div>{% endif %}
-</form>
-</body>
-</html>
+# Simple in-memory storage for demo (in production, use a database)
+ISSUES = []
+
+"""
+Flask HMPI Dashboard Application
+Refactored to use templates and static assets.
 """
 
 # ----------------------
@@ -81,12 +61,48 @@ def load_and_prepare(df):
             fill = data[m].median() if abs(s) > 1 else data[m].mean()
             data[m] = data[m].fillna(fill)
 
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(data[metal_cols])
-    scaled_df = pd.DataFrame(scaled, columns=metal_cols)
-    data['HMPI'] = scaled_df.mean(axis=1)
-    for c in metal_cols:
-        data[f'scaled_{c}'] = scaled_df[c]
+    # --- UPDATED HMPI CALCULATION (formula-based) ---
+    # Step 1: Qi = (Mi / Si) * 100
+      # --- Updated HMPI formula ---
+    # Step 1: Compute Qi = (Mi / Si) * 100
+    Qi = {}
+    for m in metal_cols:
+        safe_limit = SAFE_LIMITS.get(m, np.nan)
+        if not np.isnan(safe_limit) and safe_limit > 0:
+            Qi[m] = (data[m] / safe_limit) * 100
+        else:
+            Qi[m] = np.nan
+    Qi_df = pd.DataFrame(Qi)
+
+    # Step 2: Compute weights Wi = 1 / Si
+       # --- Replace your HMPI calculation with actual HMPI formula ---
+    weights = {}
+    for m in metal_cols:
+        limit = SAFE_LIMITS.get(m, None)
+        if limit and limit > 0:
+            weights[m] = 1.0 / limit
+        else:
+            weights[m] = 0
+
+    # Sub-index Qi for each metal
+    Q = {}
+    for m in metal_cols:
+        limit = SAFE_LIMITS.get(m, None)
+        if limit and limit > 0:
+            Q[m] = (data[m] / limit) * 100
+        else:
+            Q[m] = 0
+
+    # HMPI = sum(Qi * Wi) / sum(Wi)
+    numerator = sum(Q[m] * weights[m] for m in metal_cols if weights[m] > 0)
+    denominator = sum(weights[m] for m in metal_cols if weights[m] > 0)
+    data['HMPI'] = numerator / denominator if denominator != 0 else 0
+    data['HMPI'] = data['HMPI'] / 100
+
+
+
+
+    # ------------------------------------------------
 
     data['Site'] = data[district_col].astype(str)
     data['Latitude'] = pd.to_numeric(data[lat_col], errors='coerce')
@@ -131,7 +147,7 @@ def build_map(data):
     for _, row in data.iterrows():
         if pd.isna(row['Latitude']) or pd.isna(row['Longitude']): continue
         h = row['HMPI']
-        color = 'green' if h < 0.25 else 'yellow' if h < 0.5 else 'orange' if h < 0.75 else 'red'
+        color = 'green' if h < 25 else 'yellow' if h < 50 else 'orange' if h < 75 else 'red'
         popup_html = f"<b>{row.get('Site','Site')}</b><br>HMPI: {h:.3f}<br>Cluster: {row.get('Cluster','-')}<br>"
         folium.CircleMarker(location=[row['Latitude'], row['Longitude']],
                             radius=6, color=color, fill=True, fill_opacity=0.8,
@@ -142,19 +158,35 @@ def build_map(data):
 # ----------------------
 # Routes
 # ----------------------
-@app.route("/", methods=["GET","POST"])
-def login():
+@app.route("/", methods=["GET"]) 
+def root():
+    return redirect(url_for("landing"))
+
+@app.route("/landing")
+def landing():
+    return render_template("landing.html")
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
     if request.method == "POST":
-        uname = request.form.get("username")
-        pwd = request.form.get("password")
-        user = USERS.get(uname)
-        if user and user["password"]==pwd:
-            session["username"] = uname
-            session["role"] = user["role"]
-            return redirect(url_for("dashboard"))
-        else:
-            return render_template_string(LOGIN_TEMPLATE, error="Invalid credentials")
-    return render_template_string(LOGIN_TEMPLATE, error=None)
+        username = request.form.get("username")
+        password = request.form.get("password")
+        email = request.form.get("email")
+        role = request.form.get("role", "public")
+        
+        if username in USERS:
+            flash("Username already exists", "error")
+            return render_template("signup.html")
+        
+        USERS[username] = {"password": password, "role": role, "email": email}
+        flash("Account created successfully! Please login.", "success")
+        return redirect(url_for("login"))
+    
+    return render_template("signup.html")
+
+@app.route("/about")
+def about():
+    return render_template("about.html")
 
 @app.route("/dashboard", methods=["GET","POST"])
 def dashboard():
@@ -203,79 +235,142 @@ def dashboard():
         status = "Safe" if mean_val <= safe_limit else "Unsafe"
         metal_summary.append((m, mean_val, safe_limit, status))
 
-    return render_template_string("""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>HMPI Dashboard</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-<style>
-body { padding: 20px; }
-.chart-container { display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
-.chart-container img { flex: 1 1 45%; }
-.map-container { height: 700px; width: 100%; border:1px solid #ddd; border-radius:8px; margin-bottom:20px; }
-.metal-table { margin-top: 20px; overflow-x:auto; }
-</style>
-</head>
-<body>
-<div class="container">
-<h2 class="mt-3 mb-3">HMPI Dashboard ({{ role }})</h2>
-<div class="row mb-3">
-{% if role=="govt" %}
-<div class="col-md-4 mb-2">
-<form method="POST" enctype="multipart/form-data">
-<input type="file" name="file" class="form-control mb-1">
-<button type="submit" class="btn btn-primary btn-sm w-100">Upload CSV</button>
-</form>
-</div>
-{% endif %}
-<div class="col-md-4 mb-2">
-<form method="get">
-<label for="district" class="form-label">Select District:</label>
-<select name="district" id="district" class="form-select" onchange="this.form.submit()">
-<option value="_all_">All Districts</option>
-{% for d in districts %}
-<option value="{{ d }}" {% if d == selected %}selected{% endif %}>{{ d }}</option>
-{% endfor %}
-</select>
-</form>
-</div>
-<div class="col-md-4 mb-2 d-flex align-items-end">
-<a href="{{ url_for('logout') }}" class="btn btn-secondary w-100">Logout</a>
-</div>
-</div>
+    return render_template(
+        "dashboard.html",
+        hist_b64=hist_b64,
+        pie_b64=pie_b64,
+        map_html=map_html,
+        selected=selected,
+        role=role,
+        metal_summary=metal_summary,
+        districts=districts,
+    )
 
-<div class="chart-container mb-4">
-<img src="data:image/png;base64,{{ hist_b64 }}" class="img-fluid rounded shadow">
-<img src="data:image/png;base64,{{ pie_b64 }}" class="img-fluid rounded shadow">
-</div>
 
-<div class="map-container">
-{{ map_html|safe }}
-</div>
 
-<div class="metal-table">
-<h4>Metal Summary</h4>
-<table class="table table-bordered table-striped">
-<thead class="table-dark"><tr><th>Metal</th><th>Mean</th><th>Safe Limit</th><th>Status</th></tr></thead>
-<tbody>
-{% for metal, mean_val, safe_limit, status in metal_summary %}
-<tr><td>{{ metal }}</td><td>{{ mean_val }}</td><td>{{ safe_limit }}</td><td>{{ status }}</td></tr>
-{% endfor %}
-</tbody>
-</table>
-</div>
-</div>
-</body>
-</html>
-""", hist_b64=hist_b64, pie_b64=pie_b64, map_html=map_html,
-selected=selected, role=role, metal_summary=metal_summary, districts=districts)
+@app.route("/features")
+def features():
+    return render_template("features.html")
+
+@app.route("/report", methods=["GET", "POST"])
+def report_issue():
+    if request.method == "POST":
+        issue = {
+            "id": len(ISSUES) + 1,
+            "title": request.form.get("title"),
+            "description": request.form.get("description"),
+            "priority": request.form.get("priority"),
+            "status": "Open",
+            "reporter": session.get("username", "Anonymous"),
+            "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+        ISSUES.append(issue)
+        flash("Issue reported successfully!", "success")
+        return redirect(url_for("report_issue"))
+    
+    return render_template("report.html", issues=ISSUES)
+
+@app.route("/admin/issues")
+def admin_issues():
+    if session.get("role") != "admin":
+        flash("Access denied", "error")
+        return redirect(url_for("dashboard"))
+    return render_template("admin_issues.html", issues=ISSUES)
+
+@app.route("/api/map-data")
+def map_data():
+    if DATA is None:
+        return jsonify({"error": "No data available"})
+    
+    map_data = []
+    for _, row in DATA.iterrows():
+        if not pd.isna(row['Latitude']) and not pd.isna(row['Longitude']):
+            map_data.append({
+                "lat": float(row['Latitude']),
+                "lng": float(row['Longitude']),
+                "hmpi": float(row['HMPI']),
+                "site": str(row.get('Site', 'Unknown')),
+                "district": str(row.get(DIST_COL, 'Unknown')),
+                "cluster": int(row.get('Cluster', 0))
+            })
+    
+    return jsonify(map_data)
+
+@app.route("/login", methods=["GET","POST"]) 
+def login():
+    error = None
+    if request.method == "POST":
+        uname = request.form.get("username")
+        pwd = request.form.get("password")
+        user = USERS.get(uname)
+        if user and user["password"] == pwd:
+            session["username"] = uname
+            session["role"] = user["role"]
+            return redirect(url_for("dashboard"))
+        error = "Invalid credentials"
+        flash(error, "danger")
+    return render_template("login.html")
+
+
 
 @app.route("/logout")
 def logout():
     session.clear()
     return redirect(url_for("login"))
 
+@app.route("/general")
+def general():
+    if "username" not in session:
+        return redirect(url_for("login"))
+    df = DATA.copy() if DATA is not None else pd.DataFrame()
+    map_html = build_map(df if not df.empty else pd.DataFrame(columns=["Latitude","Longitude","HMPI"]))
+    table_html = df.head(500).to_html(classes='table table-striped table-bordered', index=False) if not df.empty else "<p>No data</p>"
+    return render_template("general.html", map_html=map_html, table=table_html)
+
+@app.route("/district/<district>")
+def district_view(district):
+    if "username" not in session:
+        return redirect(url_for("login"))
+    if DATA is None:
+        return redirect(url_for("dashboard"))
+    df = DATA.copy()
+    if DIST_COL not in df.columns:
+        return redirect(url_for("dashboard"))
+    dist_df = df[df[DIST_COL] == district].copy()
+    if dist_df.empty:
+        flash("District not found", "warning")
+        return redirect(url_for("dashboard"))
+    avg_hmpi = round(dist_df['HMPI'].mean(), 3)
+    metals_table = []
+    for m in METAL_COLS:
+        avg_val = round(dist_df[m].mean(), 2)
+        limit = SAFE_LIMITS.get(m, np.nan)
+        status = "Safe" if avg_val <= limit else "Unsafe"
+        metals_table.append({"metal": m, "avg_val": avg_val, "limit": limit, "status": status})
+    summary = {"avg_hmpi": avg_hmpi}
+    return render_template("district.html", district=district, summary=summary, metals_table=metals_table)
+
+@app.route("/site/<site>")
+def site_view(site):
+    if "username" not in session:
+        return redirect(url_for("login"))
+    if DATA is None:
+        return redirect(url_for("dashboard"))
+    df = DATA.copy()
+    if 'Site' not in df.columns:
+        return redirect(url_for("dashboard"))
+    row = df[df['Site'].astype(str) == str(site)]
+    if row.empty:
+        flash("Site not found", "warning")
+        return redirect(url_for("dashboard"))
+    metals = METAL_COLS
+    values = [float(row.iloc[0][m]) for m in metals]
+    fig = plt.figure(figsize=(8,3))
+    plt.bar(metals, values)
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+    chart_b64 = fig_to_base64(fig)
+    return render_template("site.html", site=site, chart=chart_b64)
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, port=5002)
